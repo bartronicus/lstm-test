@@ -4,21 +4,20 @@ import seaborn as sns
 import numpy as np
 import time
 import torch
+import seaborn as sns
 import torch.nn as nn
 import matplotlib.pyplot as plt
-import plotly.express as px
-import plotly.graph_objects as go
 import math, time
 from sklearn.metrics import mean_squared_error
 
-csv = pd.read_csv('BTC-USD.csv')
-# csv = csv.sort_values('Timestamp')
-csv = csv.sort_values('Date')
+print('loading')
+csv = pd.read_csv('btc.csv')
+print('loaded')
+csv = csv.sort_values('Timestamp')
 csv = csv.dropna()
 csv = csv.reset_index()
-# csv = csv.drop([0,3])
-# csv = csv.reset_index()
-# csv = csv[1000:2000]
+csv = csv[4000:6000]
+csv = csv.reset_index()
 
 price = csv['Close']
 scaler = MinMaxScaler(feature_range=(-1, 1))
@@ -53,10 +52,10 @@ y_train = torch.from_numpy(y_train).type(torch.Tensor)
 y_test = torch.from_numpy(y_test).type(torch.Tensor)
 
 input_dim = 1
-hidden_dim = 32
-num_layers = 2
+hidden_dim = 42
+num_layers = 1
 output_dim = 1
-num_epochs = 50
+num_epochs = 40
 
 class LSTM(nn.Module):
     def __init__(self, input_dim, hidden_dim, num_layers, output_dim):
@@ -74,7 +73,24 @@ class LSTM(nn.Module):
         out = self.fc(out[:, -1, :]) 
         return out
 
-model = LSTM(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim, num_layers=num_layers)
+class GRU(nn.Module):
+    def __init__(self, input_dim, hidden_dim, num_layers, output_dim):
+        super(GRU, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.dropout = .5
+        
+        self.gru = nn.GRU(input_dim, hidden_dim, num_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).requires_grad_()
+        out, (hn) = self.gru(x, (h0.detach()))
+        out = self.fc(out[:, -1, :]) 
+        return out
+
+# model = LSTM(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim, num_layers=num_layers)
+model = GRU(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim, num_layers=num_layers)
 criterion = torch.nn.MSELoss(reduction='mean')
 optimiser = torch.optim.Adam(model.parameters(), lr=0.01)
 
@@ -100,30 +116,40 @@ print("Training time: {}".format(training_time))
 minutes = np.array(price[:len(price) - 200])
 model.eval()
 
-for i in range(200):
-    start = len(minutes) - 201 + i
-    end = len(minutes) - 1 + i
-    last_20 = np.array([minutes[start:end]])
-    last_20 = torch.from_numpy(last_20).type(torch.Tensor)
-    p = model(last_20)
-    p =  np.array(p.detach().numpy())
-    minutes = np.array(np.append(minutes,p,axis=0))
-
-
 prediction = pd.DataFrame(scaler.inverse_transform(minutes))
-# print('prediction length')
-# print(prediction.shape)
 
-# predictPlot = np.empty_like(csv[['Close']])
-# predictPlot[:, :] = np.nan
-# predictPlot[804:1000, :] = prediction
+# make predictions
+model.eval()
+y_test_pred = model(x_test)
+# invert predictions
+y_train_pred = scaler.inverse_transform(y_train_pred.detach().numpy())
+y_train = scaler.inverse_transform(y_train.detach().numpy())
+y_test_pred = scaler.inverse_transform(y_test_pred.detach().numpy())
+y_test = scaler.inverse_transform(y_test.detach().numpy())
 
-sns.set_style("darkgrid")
-plt.figure(figsize = (15,9))
-plt.plot(csv[['Close']])
-plt.plot(prediction)
-plt.xticks(range(0,csv.shape[0],500),csv['Timestamp'].loc[::500],rotation=45)
-plt.title("BTC Price",fontsize=18, fontweight='bold')
-plt.xlabel('Date',fontsize=18)
-plt.ylabel('Close Price (USD)',fontsize=18)
-plt.savefig("dummy_name.png")
+# calculate root mean squared error
+trainScore = math.sqrt(mean_squared_error(y_train[:,0], y_train_pred[:,0]))
+print('Train Score: %.2f RMSE' % (trainScore))
+testScore = math.sqrt(mean_squared_error(y_test[:,0], y_test_pred[:,0]))
+print('Test Score: %.2f RMSE' % (testScore))
+
+sns.set_style("darkgrid")    
+
+fig = plt.figure()
+fig.subplots_adjust(hspace=0.2, wspace=0.2)
+
+plt.subplot(1, 2, 1)
+ax = sns.lineplot(x = csv.index[:y_train.shape[0]], y = y_train[:,0], label="Actual", color='tomato')
+ax = sns.lineplot(x = csv.index[:y_train.shape[0]], y = y_train_pred[:,0], label="Train", color='darkturquoise')
+ax.set_title('Train', size = 14, fontweight='bold')
+ax.set_ylabel("Cost (USD)", size = 14)
+ax.set_xticklabels('', size=10)
+
+plt.subplot(1, 2, 2)
+ax = sns.lineplot(x = csv.index[:y_test.shape[0]], y = y_test[:,0], label="Actual", color='tomato')
+ax = sns.lineplot(x = csv.index[:y_test.shape[0]], y = y_test_pred[:,0], label="Test", color='darkturquoise')
+ax.set_title('Test', size = 14, fontweight='bold')
+ax.set_ylabel("Cost (USD)", size = 14)
+ax.set_xticklabels('', size=10)
+
+plt.savefig("test.png")
